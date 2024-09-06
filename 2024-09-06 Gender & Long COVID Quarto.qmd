@@ -1,0 +1,396 @@
+---
+title: "HPS Gender & Long COVID"
+format: html
+editor: visual
+toc: true
+toc-depth: 4
+---
+
+```{r include=FALSE}
+
+# Load packages
+library(tidyverse)
+library(patchwork)
+library(survey)
+library(gt)
+library(gtsummary)
+library(plotly)
+
+setwd("C:/Users/subli/Documents/Projects/HPS/")
+# Read and bind raw data
+hps58_63_raw <- plyr::rbind.fill(lapply(paste0("HPS_Week", 58:63, "_PUF_CSV/pulse2023_puf_", 58:63, ".csv"),
+                                        read_csv, lazy = TRUE))
+# Read and bind replicate weight data
+repweights58_63 <- plyr::rbind.fill(lapply(paste0("HPS_Week", 58:63, "_PUF_CSV/pulse2023_repwgt_puf_", 58:63, ".csv"),
+                                           read_csv, lazy = TRUE))
+
+repweights58_63_pooled <- repweights58_63 %>% mutate_at(vars(-SCRAM, -WEEK), ~ . / 6)
+```
+
+```{r include = FALSE}
+
+# Clean and recode variables
+hps <-  hps58_63_raw %>%
+inner_join(repweights58_63_pooled, by = c("SCRAM", "WEEK")) %>%
+rename_all(tolower) %>% 
+mutate(across(c(genid_describe, eeduc, rrace, egenid_birth), ~ case_when(
+    . == -88 ~ NA_real_,
+    . == -99 ~ NA_real_,
+    TRUE ~ .))) %>%
+    
+mutate(
+    wave = as.factor(week),
+    pweight_pooled = pweight/6,
+    age = 2023 - tbirth_year,
+    
+            agecat4 = factor(case_when(
+                age >= 18 & age <= 24 ~ "18-24",
+                age >= 25 & age <= 44 ~ "25-44",
+                age >= 45 & age <= 64 ~ "45-64",
+                age >= 65 ~ "65+"), 
+              levels = c("18-24", "25-44", "45-64", "65+")),
+              
+            sex = factor(egenid_birth,
+                         levels = c(1,2),
+                         labels = c("Male", "Female")),
+    
+    gender = factor(case_when(
+        genid_describe %in% c(1, 2, 3, 4) ~ genid_describe),
+        levels = c(1, 2, 3, 4),
+        labels = c(
+        "Cis Male",
+        "Cis Female",
+        "Transgender",
+        "None of the Above"
+        )
+        ),
+    
+    
+        gender_recode0 = factor(case_when(genid_describe %in% c(1, 2) ~ genid_describe,
+        genid_describe %in% c(3,4) ~ 3),
+        levels = c(1, 2, 3),
+        labels = c(
+        "Cis Male",
+        "Cis Female",
+        "Transgender/None of the Above"
+        )
+    ),
+    
+    gender_recode1 = factor(case_when(
+        genid_describe == 1 ~ 1,
+        genid_describe == 2 ~ 2,
+        genid_describe == 3 & egenid_birth == 1 ~ 3,
+        genid_describe == 3 & egenid_birth == 2 ~ 4,
+        genid_describe == 4 & egenid_birth == 1 ~ 5,
+        genid_describe == 4 & egenid_birth == 2 ~ 6),
+        levels = c(1,2,3,4,5,6),
+        labels = c("Cis Male",
+        "Cis Female",
+        "Trans AMAB",
+        "Trans AFAB",
+        "Other AMAB",
+        "Other AFAB")),
+    
+    gender_recode2 = factor(case_when(
+        genid_describe == 1 ~ 1,
+        genid_describe == 2 ~ 2,
+        genid_describe %in% c(3,4) & egenid_birth == 1 ~ 3,
+        genid_describe %in% c(3,4) & egenid_birth == 2 ~ 4),
+        
+        levels = c(1,2,3,4),
+        labels = c("Cis Male",
+        "Cis Female",
+        "Trans/Other AMAB",
+        "Trans/Other AFAB")),
+    
+    educ = relevel(factor(case_when(
+        eeduc %in% c(1:2) ~ 1,
+        eeduc %in% c(3:3) ~ 2,
+        eeduc %in% c(4:5) ~ 3,
+        eeduc %in% c(6:6) ~ 4,
+        eeduc %in% c(7:7) ~ 5),
+        levels = c(1, 2, 3, 4, 5),
+        labels = c(
+        "Less Than High School",
+        "High School Graduate",
+        "Some College or Associates",
+        "Bachelors Degree",
+        "Graduate Degree"
+        )
+        ), ref = 2),
+    
+    raceeth = factor(case_when(
+        rrace == 1 & rhispanic == 1 ~ 1, # 1 White Non-Hispanic
+        rrace == 1 & rhispanic == 2 ~ 2, # 2 White Hispanic
+        rrace == 2 ~ 3, # 3 Black
+        rrace == 3 ~ 4, # 5 Asian
+        rrace == 4 ~ 5, # 6 Other
+        TRUE ~ NA_real_
+        ),
+        levels = c(1, 2, 3, 4, 5),
+        labels = c(
+        "White Non-Hispanic",
+        "White Hispanic",
+        "Black",
+        "Asian",
+        "Other")
+        ),
+    
+    state = as.factor(est_st),
+    
+    income_recode = factor(case_when(
+        income %in% 7:8 ~ 7,
+        income %in% c(-88,-99) ~ NA_real_,
+        TRUE ~ income
+        ),
+        levels = c(1, 2, 3, 4, 5, 6, 7),
+        labels = c(
+        "Less than $25,000",
+        "$25,000 - $34,999",
+        "$35,000 - $49,999",
+        "$50,000 - $74,999",
+        "$75,000 - $99,999",
+        "$100,000 - $149,999",
+        "$150,000 and above")
+        ),
+    
+    marital_recode = factor(case_when(
+        ms == 1 ~ 1,
+        ms == 5 ~ 3,
+        ms == -99 ~ -99,
+        ms %in% c(2, 3, 4) ~ 2,
+        ms %in% c(-88,-99) ~ NA_real_
+        ),
+        levels = c(1, 2, 3),
+        labels = c("Married",
+        "Widowed/Divorced/Separated",
+        "Never Married")
+        ),
+    
+    impact = as.factor(case_when(symptmimpct > 0 ~ symptmimpct,
+        symptmimpct %in% c(-88,-99) ~NA_real_)),
+    
+    cursymp = factor(case_when(symptmnow == 1 ~ 1,
+        symptmnow == 2 ~ 0,
+        symptmnow %in% c(-88,-99) ~NA_real_)),
+    
+    lc = case_when(hadcovidrv == 2 ~ 0,
+        longcovid == 2 ~ 0, 
+        longcovid == 1 ~ 1, 
+        TRUE ~ NA_real_),
+    
+    lc_f = as.factor(lc),
+    
+    lc_current = case_when(
+        hadcovidrv == 2 ~ 0,
+        longcovid == 2 ~ 0,
+        longcovid == 1 & symptmnow == 2 ~ 0,
+        longcovid == 1 & symptmnow == 1 ~ 1, 
+        TRUE ~NA_real_),
+    
+    lc_limitation = factor(case_when(lc_current == 0 ~ 0,
+        lc_current == 1 & symptmimpct %in% c(3,3) ~ 0,
+        lc_current == 1 & symptmimpct %in% c(1,2) ~ 1)),
+    
+    lc_limitation2 = factor(case_when(lc_current == 0 ~ 0,
+        lc_current == 1 & symptmimpct %in% c(2,3) ~ 0,
+        lc_current == 1 & symptmimpct %in% c(1,1) ~ 1)),
+    
+    lcsymp = factor(case_when(hadcovidrv == 2 ~ 0,
+        longcovid == 2 ~ 1,
+        longcovid == 1 & symptmnow == 2 ~ 2,
+        symptmnow == 1 & symptmimpct %in% c(3,3) ~ 3,
+        symptmnow == 1 & symptmimpct %in% c(2,2) ~ 4,
+        symptmnow == 1 & symptmimpct %in% c(1,1) ~ 5,
+        symptmnow %in% c(-88,-99) ~NA_real_),
+        levels = c(0,1,2,3,4,5),
+        labels = c("No COVID",
+        "Prior COVID, No Long COVID",
+        "Long COVID, No Current Sx",
+        "Current Sx, No Impact",
+        "Current Sx, Little Impact",
+        "Current Sx, Lot of Impact")),
+    overall = 1
+)
+
+
+# Complete cases only (replicate weight functions don't work with missing values)
+
+hps_svy_rep_c <- svrepdesign(
+              data = hps %>% filter(!is.na(lcsymp) & !is.na(genid_describe) ), 
+              id = ~scram, 
+              weights = ~pweight_pooled, 
+              combined.weights = TRUE,
+              repweights = "pweight[1-9]+")
+```
+
+## Overview
+
+Here's a preliminary look at the more detailed gender data from the Household Pulse Survey. I used 7 waves of data from 2023, representing \~400,000 survey responses. Details on methods and definitions are included at the bottom of this document for reference.
+
+First, here's an overview of the variables of interest - the number of survey respondents in each category and survey-weighted percentages.
+
+It's a bit curious to note that in 2023, 45% of people reported having no prior COVID-19 test result or diagnosis.
+
+```{r echo = FALSE}
+
+
+
+
+
+table1 <- tbl_svysummary(
+          svydesign(data = hps %>% filter(!is.na(lcsymp) & !is.na(genid_describe) ), id = ~scram,weights = ~pweight_pooled),
+          #by = "lcsymp",
+          statistic = list(all_continuous() ~ "{mean} ({sd})",
+                           all_categorical() ~ "{n_unweighted} ({p}%)"),
+
+                    # statistic = list(all_continuous() ~ "{mean} ({sd})",
+                    #        all_categorical() ~ "({p}%)"),
+          digits = list(all_continuous() ~ 1,
+                        all_categorical() ~ c(0,1)),
+          percent = "column",
+          include = c(agecat4, agecat4, sex, gender, gender_recode1, gender_recode2, lcsymp),
+          #label = list(age ~ "Age", )
+          ) 
+
+table1 
+
+```
+
+## Figures
+
+#### Fig 1: Prevalence of Ever Long COVID by Gender and Survey Week
+
+The figure below shows the estimate over time of people who endorsed ever having COVID-19 symptoms lasting 3 months or longer.
+
+The figure on top groups together the "Transgender" or "None of the above" responses to the gender ID question. This graph should resemble the data dashboard on the CDC website.
+
+The figure on the bottom breaks this category further into AFAB and AMAB based on sex assigned at birth. You can see that the blue line in the first figure is the average of these two groups in the second.
+
+```{r echo=FALSE}
+# Fig 1: Prevalence by gender and survey week:
+
+p1 <- svyby(~lc,~ gender_recode0 + ~wave, design = hps_svy_rep_c, FUN = svyciprop, vartype = "ci") %>% 
+            mutate_if(is.numeric, ~ . * 100) %>% tibble() %>%
+            ggplot(aes(y = lc,x=wave, group = gender_recode0, color = gender_recode0)) + 
+            geom_line() +
+                geom_point(size = 2) + 
+                geom_errorbar(aes(ymin = ci_l,ymax = ci_u, width=.05 ),) +
+                theme_minimal() + theme(legend.position = "bottom") + ylim(c(0,40)) + ylab("Ever LC, % of All Adults") + xlab("Survey Wave (June - Dec 2023)")
+
+
+
+p1b <- svyby(~lc,~ gender_recode2 + ~wave, design = hps_svy_rep_c, FUN = svyciprop, vartype = "ci") %>% 
+            mutate_if(is.numeric, ~ . * 100) %>% tibble() %>%
+            ggplot(aes(y = lc,x=wave, group = gender_recode2, color = gender_recode2)) + 
+            geom_line() +
+                geom_point(size = 2) + 
+                geom_errorbar(aes(ymin = ci_l,ymax = ci_u, width=.05 ),) +
+                theme_minimal() + theme(legend.position = "bottom") + ylim(c(0,40)) + ylab("Ever LC, % of All Adults") + xlab("Survey Wave (June - Dec 2023)")
+
+
+# subplot(ggplotly(p1), ggplotly(p1b), nrows=2, titleX = TRUE, titleY = TRUE, margin = .1)
+
+ggplotly(p1)
+ggplotly(p1b)
+
+```
+
+Looking at the data over 6 survey waves shows that the gender differences and overall prevalence are consistent during this period. Thus, we can pool the 6 waves of data for the remainder of the analysis.
+
+#### Fig 2: Prevalence of Ever Long COVID by Gender Categories
+
+See Figure 2 below. The graph on the top shows all combinations of sex at birth and current gender identity. We see that the "Transgender" and "None of the Above" (Other) categories are similar for AMAB and AFAB. So, the graph on the bottom groups "Transgender" and "None of the above" (Other) according to sex at birth.
+
+```{r echo=FALSE}
+
+
+p2 <- svyby(~lc,~ gender_recode1, design = hps_svy_rep_c, FUN = svyciprop, vartype = "ci") %>% 
+            mutate_if(is.numeric, ~ . * 100) %>% tibble() %>%
+            ggplot(aes(y = lc,x=gender_recode1, group = gender_recode1, color = gender_recode1)) + 
+                geom_point(position = position_dodge(width = 1),size = 2) + 
+                geom_errorbar(aes(ymin = ci_l,ymax = ci_u, width=.05 ),position = position_dodge(width = 1)) + 
+                theme_minimal() + theme(legend.position = "bottom") + ylim(c(0,40)) + ylab("Ever LC, % of All Adults")
+
+p2b <- svyby(~lc,~ gender_recode2, design = hps_svy_rep_c, FUN = svyciprop, vartype = "ci") %>% 
+            mutate_if(is.numeric, ~ . * 100) %>% tibble() %>%
+            ggplot(aes(y = lc,x=gender_recode2, group = gender_recode2, color = gender_recode2)) + 
+                geom_point(position = position_dodge(width = 1),size = 2) + 
+                geom_errorbar(aes(ymin = ci_l,ymax = ci_u, width=.05 ),position = position_dodge(width = 1)) +
+                theme_minimal() + theme(legend.position = "bottom") + ylim(c(0,40)) + ylab("Ever LC, % of All Adults")
+
+ggplotly(p2)
+ggplotly(p2b)
+
+```
+
+#### Fig 3: Ever LC, Current LC, and Activity Limitations by sex/gender
+
+The following 4 figures show the prevalence of 4 different indicators by sex and gender identity: Ever Long COVID, Current Long COVID, Current Activity Limitations from Long COVID, and Current Major Activity Limitations from Long COVID
+
+```{r echo=FALSE }
+
+p4<-svyby(~lc,~ gender_recode2, design = hps_svy_rep_c, FUN = svyciprop, vartype = "ci") %>% 
+            mutate_if(is.numeric, ~ . * 100) %>% tibble() %>%
+            ggplot(aes(y = lc,x=gender_recode2, group = gender_recode2, color = gender_recode2)) + 
+                geom_point(size = 2) + 
+                geom_errorbar(aes(ymin = ci_l,ymax = ci_u, width=.05 )) +
+                theme_minimal() + theme(legend.position = "none",axis.title.x=element_blank(), axis.title.y=element_blank()) + 
+                ylim(c(0,30)) + ggtitle("Ever LC")
+
+p4b<-svyby(~lc_current,~ gender_recode2, design = hps_svy_rep_c, FUN = svyciprop, vartype = "ci") %>% 
+            mutate_if(is.numeric, ~ . * 100) %>% tibble() %>%
+            ggplot(aes(y = lc_current,x=gender_recode2, group = gender_recode2, color = gender_recode2)) + 
+                geom_point(size = 2) + 
+                geom_errorbar(aes(ymin = ci_l,ymax = ci_u, width=.05 )) +
+                theme_minimal() + theme(legend.position = "none",axis.title.x=element_blank(), axis.title.y=element_blank()) + 
+                ylim(c(0,30)) + ggtitle("Current LC")
+
+p4c<-svyby(~lc_limitation,~ gender_recode2, design = hps_svy_rep_c, FUN = svyciprop, vartype = "ci") %>% 
+            mutate_if(is.numeric, ~ . * 100) %>% tibble() %>%
+            ggplot(aes(y = lc_limitation,x=gender_recode2, group = gender_recode2, color = gender_recode2)) + 
+                geom_point(size = 2) + 
+                geom_errorbar(aes(ymin = ci_l,ymax = ci_u, width=.05 )) +
+                theme_minimal() + theme(legend.position = "bottom",axis.title.x=element_blank(), axis.title.y=element_blank()) + 
+                ylim(c(0,30)) + ggtitle("Any Limitations")
+
+p4d<-svyby(~lc_limitation2,~ gender_recode2, design = hps_svy_rep_c, FUN = svyciprop, vartype = "ci") %>% 
+            mutate_if(is.numeric, ~ . * 100) %>% tibble() %>%
+            ggplot(aes(y = lc_limitation2,x=gender_recode2, group = gender_recode2, color = gender_recode2)) + 
+                geom_point(size = 2) + 
+                geom_errorbar(aes(ymin = ci_l,ymax = ci_u, width=.05 ),position = position_dodge(width = .5)) +
+                theme_minimal() + theme(legend.position = "bottom",axis.title.x=element_blank(), axis.title.y=element_blank()) + 
+                ylim(c(0,30)) + ggtitle("Major Limitations")
+
+
+ggplotly(p4)
+ggplotly(p4b)
+ggplotly(p4c)
+ggplotly(p4d)
+
+
+```
+
+## Methods
+
+Data were pooled from Household Pulse Survey waves 58 - 63 (January - October 2023). All observations with complete data about COVID-19 history and symptoms were included. Replicate weights were used to generate estimates weighted to the US Adult population. Prevalence estimates include COVID-negative respondents in the denominator.
+
+## Definitions
+
+#### Ever Long COVID:
+
+Responded "Yes" to the question: *"Did you have any symptoms lasting 3 months or longer that you did not have prior to having coronavirus or COVID-19? Long term symptoms may include: tiredness or fatigue, difficulty thinking, or concentrating, forgetfulness, or memory problems (sometimes referred to as"brain fog"), difficulty breathing or shortness of breath, joint or muscle pain, fast-beating or pounding heart (also known as heart palpitations), chest pain, dizziness on standing, changes to your menstrual cycle, changes to taste/smell, or inability to exercise."*
+
+#### Current Long COVID:
+
+Ever Long COVID and responded "Yes" to the question: *"Do you have symptoms now?"*
+
+#### Any Activity Limitations:
+
+Responded either "Yes, A little" or "Yes, A lot" to the question: *"Do these long-term symptoms reduce your ability to carry out day-to-day activities compared with the time before you had COVID-19?"*
+
+#### Significant Activity Limitations: 
+
+Responded "Yes, A lot" to the question: *"Do these long-term symptoms reduce your ability to carry out day-to-day activities compared with the time before you had COVID-19?"*
+
+## 
